@@ -120,4 +120,41 @@ public class CreateLinkJavaTest {
             invalid.stop();
         }
     }
+
+    @Test
+    public void attestationIsConfiguredWithTheBuilderAndALambda() throws Exception {
+        List<String> hashes = new CopyOnWriteArrayList<>();
+        List<StrybokHttpRequest> requests = new CopyOnWriteArrayList<>();
+        Strybok strybok = new Strybok(
+            new StrybokConfig.Builder("https://api.strybok.com", Collections.singleton("my-app.strybok.link"))
+                .clientKey(KEY)
+                .attestation(true)
+                .integrityTokenProvider(requestHash -> {
+                    hashes.add(requestHash);
+                    return null; // This device cannot attest.
+                })
+                .transport(request -> {
+                    requests.add(request);
+                    if (request.getUrl().endsWith("/attest/challenge")) {
+                        return new StrybokHttpResponse(
+                            200, "{\"challenge\":\"abc\",\"expiresAt\":\"2026-11-24T10:05:00.000Z\"}");
+                    }
+                    return new StrybokHttpResponse(
+                        401, "{\"error\":{\"code\":\"ATTESTATION_REQUIRED\",\"message\":\"Refused\"}}");
+                })
+                .callbackExecutor(Runnable::run)
+                .build());
+        try {
+            assertTrue(strybok.getConfig().getAttestation());
+            Result result = new Result();
+            strybok.createLink("/product/42", result);
+            assertTrue(result.await().error instanceof StrybokAttestationRequiredException);
+            assertEquals(Collections.singletonList("ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0"), hashes);
+            assertEquals(2, requests.size());
+            assertNull(requests.get(1).getHeaders().get("X-Strybok-Attestation"));
+            assertNull(new StrybokAttestationFailedException(null).getReason());
+        } finally {
+            strybok.stop();
+        }
+    }
 }

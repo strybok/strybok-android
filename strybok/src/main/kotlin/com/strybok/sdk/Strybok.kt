@@ -50,14 +50,16 @@ public class Strybok internal constructor(
     /** The configuration this instance was created with. */
     public val config: StrybokConfig,
     clockMillis: (() -> Long)?,
+    wallClockMillis: (() -> Long)? = null,
 ) {
-    public constructor(config: StrybokConfig) : this(config, null)
+    public constructor(config: StrybokConfig) : this(config, null, null)
 
     private val engine = StrybokEngine(
         config = config,
         callbackExecutor = config.callbackExecutor ?: MainThreadExecutor(),
         clockMillis = clockMillis ?: { System.nanoTime() / 1_000_000 },
         platform = PLATFORM,
+        wallClockMillis = wallClockMillis ?: System::currentTimeMillis,
     )
 
     /**
@@ -188,6 +190,12 @@ public class Strybok internal constructor(
      * Do not put personal data into [routePath] or [payload]: whoever receives the link can
      * read them.
      *
+     * With [StrybokConfig.attestation] switched on, the first call (and about one call an hour
+     * after that) first proves to the service that it comes from a genuine build of the app,
+     * using [StrybokConfig.integrityTokenProvider]. A device that cannot produce the proof
+     * still sends the request; the service then decides, and answers with
+     * [StrybokAttestationRequiredException] when the owner only accepts attested apps.
+     *
      * @param routePath in-app route the link opens; starts with a single `/`, at most 512 characters.
      * @param payload optional JSON object attached to the link. Values may be `String`,
      *   `Boolean`, finite numbers, `null`, `List`/arrays and `Map`s with `String` keys.
@@ -197,8 +205,10 @@ public class Strybok internal constructor(
      * @throws StrybokException [StrybokUnauthorizedException] when no client key is configured
      *   (before any network call) or the service refuses it, [StrybokValidationException] when
      *   the request is rejected by the SDK or the service, [RouteNotAllowedException],
-     *   [StrybokRateLimitedException], and [StrybokNetworkException] /
-     *   [StrybokTimeoutException] / [StrybokServerException] after all retries.
+     *   [StrybokRateLimitedException], [StrybokAttestationRequiredException] /
+     *   [StrybokAttestationFailedException] when the owner asks for attestation, and
+     *   [StrybokNetworkException] / [StrybokTimeoutException] / [StrybokServerException] after
+     *   all retries.
      * @throws IllegalStateException after [stop].
      */
     public suspend fun createLink(
@@ -276,7 +286,7 @@ public class Strybok internal constructor(
 
     public companion object {
         /** Version reported with analytics events. */
-        public const val SDK_VERSION: String = "0.2.0"
+        public const val SDK_VERSION: String = "0.3.0"
 
         internal const val PLATFORM: String = "android"
     }

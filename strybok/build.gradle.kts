@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.strybok"
-version = "0.2.0"
+version = "0.3.0"
 
 android {
     namespace = "com.strybok.sdk"
@@ -40,6 +40,10 @@ kotlin {
 dependencies {
     // Flow is part of the public API.
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
+
+    // Only PlayIntegrityTokenProvider uses it, and only to compile: the published artifact does
+    // not depend on Google's libraries. An app that wants attestation adds the library itself.
+    compileOnly("com.google.android.play:integrity:1.4.0")
 
     testImplementation("junit:junit:4.13.2")
     // android.jar only contains stubs of org.json; JVM unit tests need the real thing.

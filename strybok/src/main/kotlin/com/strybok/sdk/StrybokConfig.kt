@@ -80,6 +80,21 @@ public class StrybokConfig(
      * key (`lb_…`) here.
      */
     clientKey: String? = null,
+    /**
+     * Extra protection for [Strybok.createLink], off by default: prove to the service that the
+     * request comes from a genuine build of the app on a genuine device (Google Play
+     * Integrity). Needs [clientKey] and an [integrityTokenProvider]. The proof is made lazily
+     * inside `createLink`, never when the SDK starts or a link arrives. See
+     * `docs/link-creation-security.md` for what it does and does not protect.
+     */
+    public val attestation: Boolean = false,
+    /**
+     * Where the Play Integrity token comes from when [attestation] is on; usually a
+     * [PlayIntegrityTokenProvider]. `null` — for example in a build for a market without
+     * Google Play — means this app cannot attest: links are requested without a proof and the
+     * service decides.
+     */
+    public val integrityTokenProvider: StrybokIntegrityTokenProvider? = null,
 ) {
     public val apiBaseUrl: String = apiBaseUrl.trim().trimEnd('/')
 
@@ -118,6 +133,8 @@ public class StrybokConfig(
         private var transport: StrybokTransport? = null
         private var callbackExecutor: Executor? = null
         private var clientKey: String? = null
+        private var attestation: Boolean = false
+        private var integrityTokenProvider: StrybokIntegrityTokenProvider? = null
 
         public fun timeoutMillis(value: Long): Builder = apply { timeoutMillis = value }
 
@@ -138,6 +155,13 @@ public class StrybokConfig(
         /** Publishable key (`pk_…`) for [Strybok.createLink]; never a secret API key. */
         public fun clientKey(value: String?): Builder = apply { clientKey = value }
 
+        /** Extra protection for [Strybok.createLink] (Play Integrity); needs [integrityTokenProvider]. */
+        public fun attestation(value: Boolean): Builder = apply { attestation = value }
+
+        /** Source of Play Integrity tokens when [attestation] is on, e.g. a [PlayIntegrityTokenProvider]. */
+        public fun integrityTokenProvider(value: StrybokIntegrityTokenProvider?): Builder =
+            apply { integrityTokenProvider = value }
+
         public fun build(): StrybokConfig = StrybokConfig(
             apiBaseUrl = apiBaseUrl,
             allowedHosts = allowedHosts,
@@ -150,6 +174,8 @@ public class StrybokConfig(
             transport = transport,
             callbackExecutor = callbackExecutor,
             clientKey = clientKey,
+            attestation = attestation,
+            integrityTokenProvider = integrityTokenProvider,
         )
     }
 }

@@ -40,9 +40,11 @@ internal class StrybokStoppedException : IllegalStateException("Strybok has been
 internal class StrybokEngine(
     private val config: StrybokConfig,
     private val callbackExecutor: Executor,
-    /** Monotonic clock in milliseconds, used for duplicate detection only. */
+    /** Monotonic clock in milliseconds: duplicate detection and the life of an attestation token. */
     private val clockMillis: () -> Long,
     private val platform: String,
+    /** Wall clock in milliseconds since the epoch; only compared with an attestation token's expiry. */
+    private val wallClockMillis: () -> Long = System::currentTimeMillis,
 ) {
     private class Delivery(val link: ResolvedDeepLink, val sequence: Long) {
         /** Guarded by [lock]: put back into the queue by a departing subscriber. */
@@ -74,6 +76,9 @@ internal class StrybokEngine(
     private var launchJob: Job? = null
     private var lastUrl: String? = null
     private var lastUrlAt = 0L
+
+    /** Created by the first `createLink` that needs it; never by `start` or an incoming link. */
+    private var attestation: AttestationSession? = null
     // -------------------------------------------------------------------------
 
     @Volatile
@@ -240,30 +245,82 @@ internal class StrybokEngine(
         } catch (error: NotJsonException) {
             throw preflightFailure("payload", error.message.orEmpty())
         }
+        val session = if (config.attestation) attestationSession(clientKey) else null
+        // Lazily, here and nowhere else: the first call attests, later ones reuse the token.
+        var token = session?.token()
+        var response = sendCreateLink(clientKey, token, body)
+        if (session != null && token != null && attestationErrorCode(response) == ATTESTATION_INVALID) {
+            // The token expired, is used up or was refused: attest again and repeat the same
+            // request, once. This does not count against maxRetries.
+            val reason = attestationErrorReason(response)
+            session.discard(token)
+            token = session.token() ?: throw StrybokAttestationFailedException(reason)
+            response = sendCreateLink(clientKey, token, body)
+            // Refused as well: the next call starts with a new attestation.
+            if (attestationErrorCode(response) == ATTESTATION_INVALID) session.discard(token)
+        }
+        return when (val status = response.statusCode) {
+            200, 201 -> parseCreated(response.body)
+                ?: throw StrybokServerException("Malformed create-link response", null, status)
+            401 -> throw when (attestationErrorCode(response)) {
+                ATTESTATION_REQUIRED -> StrybokAttestationRequiredException()
+                ATTESTATION_INVALID -> StrybokAttestationFailedException(attestationErrorReason(response))
+                else -> StrybokUnauthorizedException(KEY_REFUSED)
+            }
+            403 -> throw RouteNotAllowedException(routePath)
+            429 -> throw StrybokRateLimitedException(retryAfterSeconds(response))
+            400, 413, 422 -> throw validationFailure(status, response.body)
+            else -> throw StrybokServerException("Unexpected status $status", null, status)
+        }
+    }
+
+    /** One create-link request with the usual retries; returns the first answer below 500. */
+    private suspend fun sendCreateLink(clientKey: String, token: String?, body: String): StrybokHttpResponse {
+        val headers = LinkedHashMap<String, String>()
+        headers["Content-Type"] = "application/json"
+        headers["Accept"] = "application/json"
+        headers[CLIENT_KEY_HEADER] = clientKey
+        if (token != null) headers[ATTESTATION_HEADER] = token
         val request = StrybokHttpRequest(
             method = "POST",
             url = "${config.apiBaseUrl}/v1/public/links",
-            headers = mapOf(
-                "Content-Type" to "application/json",
-                "Accept" to "application/json",
-                CLIENT_KEY_HEADER to clientKey,
-            ),
+            headers = headers,
             body = body,
             timeoutMillis = config.timeoutMillis,
         )
-        return send(request, null, "The create-link request timed out") { response ->
-            when (val status = response.statusCode) {
-                200, 201 -> parseCreated(response.body)
-                    ?: throw StrybokServerException("Malformed create-link response", null, status)
-                401 -> throw StrybokUnauthorizedException(
-                    "The client key was refused: it is wrong or was replaced, or link creation is switched off",
-                )
-                403 -> throw RouteNotAllowedException(routePath)
-                429 -> throw StrybokRateLimitedException(retryAfterSeconds(response))
-                400, 413, 422 -> throw validationFailure(status, response.body)
-                else -> throw StrybokServerException("Unexpected status $status", null, status)
-            }
-        }
+        return send(request, null, "The create-link request timed out") { it }
+    }
+
+    private fun attestationSession(clientKey: String): AttestationSession = synchronized(lock) {
+        attestation ?: AttestationSession(
+            apiBaseUrl = config.apiBaseUrl,
+            clientKey = clientKey,
+            timeoutMillis = config.timeoutMillis,
+            provider = config.integrityTokenProvider,
+            scope = scope,
+            clockMillis = clockMillis,
+            wallClockMillis = wallClockMillis,
+            execute = ::execute,
+        ).also { attestation = it }
+    }
+
+    /** `error.code` of a 401 answer when it is one of the attestation codes; `null` otherwise. */
+    private fun attestationErrorCode(response: StrybokHttpResponse): String? {
+        if (response.statusCode != 401) return null
+        val code = errorObject(response.body)?.opt("code") as? String
+        return code.takeIf { it == ATTESTATION_INVALID || it == ATTESTATION_REQUIRED }
+    }
+
+    /** `error.details.reason` when it looks like one of the service's reason words; never free text. */
+    private fun attestationErrorReason(response: StrybokHttpResponse): String? {
+        val reason = (errorObject(response.body)?.opt("details") as? JSONObject)?.opt("reason") as? String
+        return reason?.takeIf { it.length in 1..32 && it.all { char -> char in 'a'..'z' || char == '_' } }
+    }
+
+    private fun errorObject(body: String): JSONObject? = try {
+        JSONObject(body).opt("error") as? JSONObject
+    } catch (_: JSONException) {
+        null
     }
 
     /**
@@ -569,8 +626,13 @@ internal class StrybokEngine(
         if (stopped) throw StrybokStoppedException()
     }
 
-    private companion object {
+    internal companion object {
         const val CLIENT_KEY_HEADER = "X-Strybok-Key"
-        const val MAX_ROUTE_PATH_LENGTH = 512
+        const val ATTESTATION_HEADER = "X-Strybok-Attestation"
+        const val KEY_REFUSED =
+            "The client key was refused: it is wrong or was replaced, or link creation is switched off"
+        private const val ATTESTATION_INVALID = "ATTESTATION_INVALID"
+        private const val ATTESTATION_REQUIRED = "ATTESTATION_REQUIRED"
+        private const val MAX_ROUTE_PATH_LENGTH = 512
     }
 }
