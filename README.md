@@ -33,30 +33,19 @@ Full guide, manifest setup and troubleshooting:
 [`docs/android-sdk.md`](./docs/android-sdk.md).
 Behaviour shared by all SDKs: [`docs/sdk-contract.md`](./docs/sdk-contract.md).
 
-- Not published to Maven Central yet: clone `https://github.com/strybok/strybok-android` and use
-  it as a Gradle composite build (see Install).
-- Covered by JVM unit tests only. Not yet verified on a physical device or emulator.
+- **Early release (0.1.x)**: covered by JVM unit tests only. Not yet verified on a physical device or emulator.
 - Deferred deep linking is not supported.
 - `minSdk` 21. Only dependency: `kotlinx-coroutines-core`.
 
 ## Install
 
-Clone the repository next to your app (or add it as a git submodule), then in the app's
-`settings.gradle.kts`:
-
-```kotlin
-includeBuild("../strybok-android") // path to your clone
-```
-
-and in `app/build.gradle.kts`:
+In `app/build.gradle.kts` (the library is on Maven Central):
 
 ```kotlin
 dependencies {
-    implementation("com.strybok:strybok:0.1.0")
+    implementation("com.strybok:strybok-android:0.1.0")
 }
 ```
-
-Gradle substitutes the coordinates with the included build; nothing is downloaded.
 
 ## Layout
 

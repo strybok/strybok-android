@@ -4,9 +4,9 @@ The `com.strybok.sdk` library receives verified HTTPS links (Android App Links) 
 Activity, asks the Strybok API which in-app route a link stands for, and hands your app each
 link exactly once.
 
-> **Status:** covered by JVM unit tests, and a sample app using it compiles (Kotlin and Java,
-> including an R8 release build). Not yet verified on a physical device or emulator (see the
-> [manual test plan](./manual-test-plan.md)) and therefore not published to Maven Central.
+> **Status:** early release (0.1.x), published on Maven Central. Covered by JVM unit tests, and
+> a sample app using it compiles (Kotlin and Java, including an R8 release build). Not yet
+> verified on a physical device or emulator (see the [manual test plan](./manual-test-plan.md)).
 >
 > Deferred deep linking is **not supported**: a link tapped before the app is installed is not
 > restored after installation.
@@ -27,35 +27,17 @@ Requirements: `minSdk` 21, Kotlin coroutines (`kotlinx-coroutines-core` comes wi
 
 ## 2. Add the library
 
-The library is not published to Maven Central yet. Clone its repository next to your app (or add
-it as a git submodule) and include it as a Gradle composite build:
-
-```sh
-git clone https://github.com/strybok/strybok-android
-```
-
-`settings.gradle.kts` of your app:
-
-```kotlin
-includeBuild("../strybok-android") // path to your clone
-```
-
-`app/build.gradle.kts`:
+The library is on Maven Central. In `app/build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.strybok:strybok:0.1.0")
+    implementation("com.strybok:strybok-android:0.1.0")
 }
 ```
 
-Gradle substitutes the coordinates with the project from the included build; nothing is
-downloaded. The library builds with Gradle 9.1 and Android Gradle plugin 9.0.1 (built-in Kotlin).
-This was checked with an app on the same plugin version; other combinations are untested.
-
-Alternatively build the AAR once (`./gradlew assembleRelease` in the SDK directory) and add
-`strybok/build/outputs/aar/strybok-release.aar` as a file dependency. An AAR carries no
-dependency information, so add
-`implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")` (or newer) yourself.
+`mavenCentral()` must be among your repositories (it is in a project created by Android Studio).
+The library is built with Gradle 9.1 and Android Gradle plugin 9.0.1 (built-in Kotlin); the
+source is at [github.com/strybok/strybok-android](https://github.com/strybok/strybok-android).
 
 No ProGuard/R8 rules are needed.
 
