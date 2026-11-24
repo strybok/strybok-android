@@ -26,6 +26,13 @@ public interface StrybokResolveCallback {
     public fun onError(error: StrybokException)
 }
 
+/** Result callback of [Strybok.createLink] for callers without coroutines. */
+public interface StrybokCreateLinkCallback {
+    public fun onCreated(link: CreatedLink)
+
+    public fun onError(error: StrybokException)
+}
+
 /**
  * Configuration of [Strybok]. Kotlin callers use named arguments, Java callers
  * the [Builder].
@@ -37,11 +44,12 @@ public class StrybokConfig(
     apiBaseUrl: String,
     /** Link hostnames of this app. Links on any other host are ignored. */
     allowedHosts: Set<String>,
-    /** Time allowed for one resolve attempt. */
+    /** Time allowed for one attempt of a resolve or create-link request. */
     public val timeoutMillis: Long = 5_000,
     /**
      * Extra attempts after a timeout, network error or 5xx. Resolving is an
-     * idempotent GET, so retrying is safe. `404` is never retried.
+     * idempotent GET and creating a link is idempotent too, so retrying is safe.
+     * 4xx answers are never retried.
      */
     public val maxRetries: Int = 2,
     /** Pause before the first retry; doubles for each further retry. */
@@ -65,12 +73,22 @@ public class StrybokConfig(
      * the Android main thread. Flow collectors run in their own coroutine context.
      */
     public val callbackExecutor: Executor? = null,
+    /**
+     * Publishable key of the application (`pk_…`), shown in the dashboard under "Links from
+     * the app". Only needed for [Strybok.createLink]. It is safe to ship inside the app: it
+     * can only create links for the route patterns the owner listed. Never put a secret API
+     * key (`lb_…`) here.
+     */
+    clientKey: String? = null,
 ) {
     public val apiBaseUrl: String = apiBaseUrl.trim().trimEnd('/')
 
     /** Lower-cased copy of the hostnames passed in. */
     public val allowedHosts: Set<String> =
         allowedHosts.mapTo(LinkedHashSet()) { it.trim().lowercase(Locale.ROOT) }
+
+    /** The publishable key passed in, without surrounding whitespace; `null` when none was given. */
+    public val clientKey: String? = clientKey?.trim()?.takeIf { it.isNotEmpty() }
 
     init {
         val lower = this.apiBaseUrl.lowercase(Locale.ROOT)
@@ -99,6 +117,7 @@ public class StrybokConfig(
         private var onError: StrybokErrorListener? = null
         private var transport: StrybokTransport? = null
         private var callbackExecutor: Executor? = null
+        private var clientKey: String? = null
 
         public fun timeoutMillis(value: Long): Builder = apply { timeoutMillis = value }
 
@@ -116,6 +135,9 @@ public class StrybokConfig(
 
         public fun callbackExecutor(value: Executor?): Builder = apply { callbackExecutor = value }
 
+        /** Publishable key (`pk_…`) for [Strybok.createLink]; never a secret API key. */
+        public fun clientKey(value: String?): Builder = apply { clientKey = value }
+
         public fun build(): StrybokConfig = StrybokConfig(
             apiBaseUrl = apiBaseUrl,
             allowedHosts = allowedHosts,
@@ -127,6 +149,7 @@ public class StrybokConfig(
             onError = onError,
             transport = transport,
             callbackExecutor = callbackExecutor,
+            clientKey = clientKey,
         )
     }
 }

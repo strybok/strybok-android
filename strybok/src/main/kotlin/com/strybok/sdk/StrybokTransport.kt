@@ -22,11 +22,20 @@ public class StrybokHttpRequest(
 }
 
 /** The answer to a [StrybokHttpRequest]. */
-public class StrybokHttpResponse(
+public class StrybokHttpResponse @JvmOverloads constructor(
     public val statusCode: Int,
     /** Response body decoded as UTF-8; empty when there is none. */
     public val body: String,
-)
+    /**
+     * Response headers. The SDK only reads `Retry-After` (for [Strybok.createLink]) and looks
+     * names up case-insensitively, so a transport may leave this empty.
+     */
+    public val headers: Map<String, String> = emptyMap(),
+) {
+    /** The value of the header [name], compared case-insensitively; `null` when absent. */
+    public fun header(name: String): String? =
+        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+}
 
 /**
  * Performs the HTTP calls of the SDK. Replace it through [StrybokConfig.transport]
@@ -63,10 +72,20 @@ public class HttpUrlConnectionTransport : StrybokTransport {
             }
             val status = connection.responseCode
             val stream: InputStream? = if (status >= 400) connection.errorStream else connection.inputStream
-            return StrybokHttpResponse(status, stream?.use(::readCapped).orEmpty())
+            val answer = stream?.use(::readCapped).orEmpty()
+            return StrybokHttpResponse(status, answer, readHeaders(connection))
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun readHeaders(connection: HttpURLConnection): Map<String, String> {
+        val headers = LinkedHashMap<String, String>()
+        // The status line is listed under a null name.
+        for ((name, values) in connection.headerFields) {
+            if (name != null && values != null) headers[name] = values.joinToString(", ")
+        }
+        return headers
     }
 
     private fun readCapped(stream: InputStream): String {
@@ -82,7 +101,7 @@ public class HttpUrlConnectionTransport : StrybokTransport {
     }
 
     private companion object {
-        /** Resolve answers are small; anything bigger is not ours. */
+        /** Answers of the API are small; anything bigger is not ours. */
         const val MAX_BODY_BYTES = 1024 * 1024
     }
 }

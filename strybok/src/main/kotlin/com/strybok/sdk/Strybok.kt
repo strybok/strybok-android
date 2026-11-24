@@ -40,6 +40,9 @@ import kotlinx.coroutines.flow.Flow
  * }
  * ```
  *
+ * [createLink] makes a link to share; it needs [StrybokConfig.clientKey] and is independent
+ * of everything above.
+ *
  * All methods are thread-safe. Deferred deep linking (restoring a link after the
  * app was installed from a store) is not supported.
  */
@@ -167,6 +170,67 @@ public class Strybok internal constructor(
     public fun resolve(url: String, callback: StrybokResolveCallback): Unit =
         engine.resolve(url, callback)
 
+    // --- Creating links -----------------------------------------------------------
+
+    /**
+     * Asks the service for a short link to a screen of this app — the "Share" button.
+     *
+     * Needs [StrybokConfig.clientKey] and the "Links from the app" feature enabled for the
+     * application in the dashboard, with a route pattern that covers [routePath]. It runs
+     * only when you call it, is independent of `start` and of incoming links, and does not
+     * use `allowedHosts`.
+     *
+     * Creating is idempotent: the same content always returns the same active link, so
+     * timeouts, network errors and 5xx answers are retried like for [resolve], and repeated
+     * taps on "Share" do not pile up links. Errors are thrown to the caller and never reach
+     * [StrybokConfig.onError].
+     *
+     * Do not put personal data into [routePath] or [payload]: whoever receives the link can
+     * read them.
+     *
+     * @param routePath in-app route the link opens; starts with a single `/`, at most 512 characters.
+     * @param payload optional JSON object attached to the link. Values may be `String`,
+     *   `Boolean`, finite numbers, `null`, `List`/arrays and `Map`s with `String` keys.
+     * @param title optional title of the link preview.
+     * @param description optional description of the link preview.
+     * @param imageUrl optional public HTTPS URL of the link preview image.
+     * @throws StrybokException [StrybokUnauthorizedException] when no client key is configured
+     *   (before any network call) or the service refuses it, [StrybokValidationException] when
+     *   the request is rejected by the SDK or the service, [RouteNotAllowedException],
+     *   [StrybokRateLimitedException], and [StrybokNetworkException] /
+     *   [StrybokTimeoutException] / [StrybokServerException] after all retries.
+     * @throws IllegalStateException after [stop].
+     */
+    public suspend fun createLink(
+        routePath: String,
+        payload: Map<String, Any?>? = null,
+        title: String? = null,
+        description: String? = null,
+        imageUrl: String? = null,
+    ): CreatedLink = engine.createLink(routePath, payload, title, description, imageUrl)
+
+    /**
+     * Callback variant of [createLink] for callers without coroutines; pass `null` for the
+     * optional values you do not need. [callback] runs on the callback executor and is not
+     * called when the instance is stopped while the request is in flight.
+     *
+     * @throws IllegalStateException after [stop].
+     */
+    public fun createLink(
+        routePath: String,
+        payload: Map<String, Any?>?,
+        title: String?,
+        description: String?,
+        imageUrl: String?,
+        callback: StrybokCreateLinkCallback,
+    ): Unit = engine.createLink(routePath, payload, title, description, imageUrl, callback)
+
+    /** Callback variant of [createLink] with only a route. */
+    public fun createLink(routePath: String, callback: StrybokCreateLinkCallback): Unit =
+        engine.createLink(routePath, null, null, null, null, callback)
+
+    // --- Listeners and lifecycle ---------------------------------------------------
+
     /**
      * Adds a listener for resolved links; an alternative to collecting [links].
      * Queued links are delivered to it right away. The listener runs on the
@@ -212,7 +276,7 @@ public class Strybok internal constructor(
 
     public companion object {
         /** Version reported with analytics events. */
-        public const val SDK_VERSION: String = "0.1.0"
+        public const val SDK_VERSION: String = "0.2.0"
 
         internal const val PLATFORM: String = "android"
     }

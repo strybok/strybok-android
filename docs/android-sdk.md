@@ -4,7 +4,7 @@ The `com.strybok.sdk` library receives verified HTTPS links (Android App Links) 
 Activity, asks the Strybok API which in-app route a link stands for, and hands your app each
 link exactly once.
 
-> **Status:** early release (0.1.x), published on Maven Central. Covered by JVM unit tests, and
+> **Status:** early release (0.2.x), published on Maven Central. Covered by JVM unit tests, and
 > a sample app using it compiles (Kotlin and Java, including an R8 release build). Not yet
 > verified on a physical device or emulator (see the [manual test plan](./manual-test-plan.md)).
 >
@@ -31,7 +31,7 @@ The library is on Maven Central. In `app/build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    implementation("com.strybok:strybok-android:0.1.0")
+    implementation("com.strybok:strybok-android:0.2.0")
 }
 ```
 
@@ -276,18 +276,22 @@ Listeners and callbacks run on the main thread unless you set `callbackExecutor`
 | `awaitStarted()`                         | Suspends until the launch link was resolved or has failed.                                                                                              |
 | `resolve(url)`                           | Suspends; resolve a URL explicitly (QR scanner). Does not emit on `links` or report an app open. Also `resolve(uri: Uri)` and `resolve(url, callback)`. |
 | `isStrybokUrl(url)`                      | Whether a URL is one of this app's links.                                                                                                               |
+| `createLink(routePath, …)`               | Suspends; makes a short link to a screen of the app. See [Create a link to share](#9-create-a-link-to-share).                                           |
 | `stop()`                                 | Stop for good; nothing is delivered afterwards. Not needed for a process-wide instance.                                                                 |
-| `Strybok.SDK_VERSION`                    | `"0.1.0"`.                                                                                                                                              |
+| `Strybok.SDK_VERSION`                    | `"0.2.0"`.                                                                                                                                              |
 
 `StrybokConfig` options: `timeoutMillis` (5000 per attempt), `maxRetries` (2; only timeouts,
 network errors and 5xx are retried — resolving is an idempotent GET), `retryDelayMillis` (400,
-doubles per retry), `dedupeWindowMillis` (2000), `reportAppOpens` (`true`), `onError`, plus
-`transport` and `callbackExecutor` for tests and custom HTTP stacks.
+doubles per retry), `dedupeWindowMillis` (2000), `reportAppOpens` (`true`), `onError`,
+`clientKey` (only for `createLink`), plus `transport` and `callbackExecutor` for tests and custom
+HTTP stacks.
 
 ### Errors
 
 `resolve` throws, and `onError` receives, a `StrybokException`. The hierarchy is sealed, so a
-`when` is exhaustive; every error has `url`, the link being handled.
+`when` is exhaustive; every error has `url`, the link being handled. The same hierarchy holds the
+errors that only `createLink` throws (see [Create a link to share](#9-create-a-link-to-share));
+they never reach `onError`.
 
 | Type                                                  | Meaning                                                                                                                                        |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -301,6 +305,7 @@ when (error) {
     is LinkNotFoundException -> showMessage("This link is no longer valid")
     is StrybokTimeoutException, is StrybokNetworkException -> showMessage("You seem to be offline")
     is StrybokServerException, is UnsupportedLinkException -> Unit
+    else -> Unit // createLink only
 }
 ```
 
@@ -328,7 +333,8 @@ and the SDK version — no device identifiers. It never delays navigation and al
 ignored. Disable it with `reportAppOpens = false`.
 
 Only the link's host and slug are sent to `resolve`; query parameters and fragments stay on the
-device.
+device. `createLink` sends the client key and what you pass to it (route, payload, title,
+description, image URL), and only when your app calls it.
 
 ## 8. Testing your integration
 
@@ -373,6 +379,90 @@ Check cold start (app force-stopped first), background, foreground, rotation rig
 opening a link, and reopening the app from the recents screen (the link must not open again).
 
 The SDK's own tests: `./gradlew test` in the SDK directory.
+
+## 9. Create a link to share
+
+`createLink` asks Strybok for a short link to a screen of your app — what a "Share" button
+needs. It is optional and independent of receiving links.
+
+1. In the dashboard, open the application and enable **Links from the app**.
+2. List the **route patterns** the app may create links for, for example `/product/*`. A pattern
+   is made of `/`-separated segments: a literal, `*` for exactly one segment, or `**` at the end
+   for one or more. A route outside the list is refused.
+3. Copy the **publishable key** (`pk_…`) into the configuration as `clientKey`.
+
+The publishable key is not a secret: it is safe to ship inside the app, because it can only
+create links for the listed routes of this one application. **Never put a secret API key
+(`lb_…`) into an app**; `createLink` does not accept one.
+
+```kotlin
+val strybok = Strybok(
+    StrybokConfig(
+        apiBaseUrl = "https://api.strybok.com",
+        allowedHosts = setOf("my-app.strybok.link"),
+        clientKey = "pk_…",
+    ),
+)
+
+// In a coroutine, for example from the click handler of the Share button:
+try {
+    val link = strybok.createLink(
+        routePath = "/product/42",
+        payload = mapOf("productId" to 42), // optional
+        title = "Red shoes", // optional, as are description and imageUrl
+    )
+    startActivity(
+        Intent.createChooser(
+            Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, link.url),
+            null,
+        ),
+    )
+} catch (error: StrybokException) {
+    when (error) {
+        is StrybokRateLimitedException, is StrybokNetworkException,
+        is StrybokTimeoutException, is StrybokServerException,
+        -> showMessage("Could not create the link, try again later")
+        else -> Log.e("Strybok", "Link creation is misconfigured", error)
+    }
+}
+```
+
+Java uses a callback, which runs on the main thread unless `callbackExecutor` is set; pass `null`
+for the values you do not need:
+
+```java
+// Configuration: new StrybokConfig.Builder(...).clientKey("pk_…").build()
+strybok.createLink("/product/42", payload, "Red shoes", null, null, new StrybokCreateLinkCallback() {
+    @Override public void onCreated(CreatedLink link) { share(link.getUrl()); }
+    @Override public void onError(StrybokException error) { /* see the table below */ }
+});
+```
+
+The result is a `CreatedLink` with `url` (what the user shares), `slug`, `routePath` and
+`linkId`. `payload` is a `Map<String, Any?>` of plain JSON values (`String`, `Boolean`, numbers,
+`null`, `List`, `Map` with `String` keys).
+
+| Error                                                                            | Meaning                                                                                                                         | Retrying helps |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------- |
+| `StrybokUnauthorizedException`                                                   | No `clientKey` configured, or the key is wrong or was replaced, or the feature is switched off. The service does not say which. | no             |
+| `RouteNotAllowedException`                                                       | `routePath` is not covered by the route patterns in the dashboard.                                                              | no             |
+| `StrybokValidationException`                                                     | The route, payload, title, description or image URL was rejected; see `message` and `issues`.                                   | no             |
+| `StrybokRateLimitedException`                                                    | Too many requests, or the app's daily limit of new links is reached; `retryAfterSeconds` when the service says how long.        | later          |
+| `StrybokNetworkException` / `StrybokTimeoutException` / `StrybokServerException` | No usable answer after all retries.                                                                                             | later          |
+
+Things to know:
+
+- Creating the same content again returns the same link, so repeated taps on "Share" do not pile
+  up links, and the SDK can safely retry timeouts, network errors and 5xx answers (`maxRetries`,
+  `retryDelayMillis`, `timeoutMillis`). 4xx answers, including 429, are never retried.
+- It runs only when you call it: `start`, incoming links and `resolve` never wait for it. It works
+  before `start` and does not use `allowedHosts`. After `stop()` it throws `IllegalStateException`.
+- Errors are thrown to the caller (or given to the callback), never to `onError`, and never
+  contain the key or the payload.
+- Do not put personal data into the route or the payload: whoever receives the link can read
+  them.
+- In tests, answer the `POST …/v1/public/links` request in your `transport` with
+  `StrybokHttpResponse(201, """{"linkId":"l1","url":"https://my-app.strybok.link/abc","slug":"abc","routePath":"/product/42"}""")`.
 
 ## Troubleshooting
 

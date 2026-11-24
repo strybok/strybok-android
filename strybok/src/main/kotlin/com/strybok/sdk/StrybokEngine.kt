@@ -175,7 +175,109 @@ internal class StrybokEngine(
             body = null,
             timeoutMillis = config.timeoutMillis,
         )
+        return send(request, url, "The resolve request timed out") { response ->
+            when (val status = response.statusCode) {
+                200 -> parseResolved(url, response.body)
+                404 -> throw LinkNotFoundException(url)
+                // Client errors will not improve.
+                else -> throw StrybokServerException("Unexpected status $status", url, status)
+            }
+        }
+    }
 
+    fun createLink(
+        routePath: String,
+        payload: Map<String, Any?>?,
+        title: String?,
+        description: String?,
+        imageUrl: String?,
+        callback: StrybokCreateLinkCallback,
+    ) {
+        checkNotStopped()
+        scope.launch {
+            try {
+                val link = createLink(routePath, payload, title, description, imageUrl)
+                callbackExecutor.execute { if (!stopped) callback.onCreated(link) }
+            } catch (error: StrybokException) {
+                callbackExecutor.execute { if (!stopped) callback.onError(error) }
+            } catch (_: StrybokStoppedException) {
+                // Stopped while the request was in flight; nothing to report.
+            }
+        }
+    }
+
+    /**
+     * See [Strybok.createLink]. Independent of `start`, of incoming links and of
+     * `allowedHosts`; its errors go to the caller only, never to `onError`, and never contain
+     * the client key or the payload.
+     */
+    suspend fun createLink(
+        routePath: String,
+        payload: Map<String, Any?>?,
+        title: String?,
+        description: String?,
+        imageUrl: String?,
+    ): CreatedLink {
+        checkNotStopped()
+        val clientKey = config.clientKey
+            ?: throw StrybokUnauthorizedException("No clientKey is configured")
+        // A real key is plain ASCII. Anything else can only be refused, and must not reach an
+        // HTTP header (or an error message of the HTTP stack complaining about it).
+        if (!clientKey.all { it in '!'..'~' }) {
+            throw StrybokUnauthorizedException("The configured clientKey is not a valid key")
+        }
+        if (!routePath.startsWith("/") || routePath.startsWith("//") ||
+            routePath.length > MAX_ROUTE_PATH_LENGTH
+        ) {
+            throw preflightFailure(
+                "routePath",
+                "routePath must start with a single '/' and be at most $MAX_ROUTE_PATH_LENGTH characters long",
+            )
+        }
+        // Built once: every retry sends exactly the same body.
+        val body = try {
+            createLinkBody(routePath, payload, title, description, imageUrl)
+        } catch (error: NotJsonException) {
+            throw preflightFailure("payload", error.message.orEmpty())
+        }
+        val request = StrybokHttpRequest(
+            method = "POST",
+            url = "${config.apiBaseUrl}/v1/public/links",
+            headers = mapOf(
+                "Content-Type" to "application/json",
+                "Accept" to "application/json",
+                CLIENT_KEY_HEADER to clientKey,
+            ),
+            body = body,
+            timeoutMillis = config.timeoutMillis,
+        )
+        return send(request, null, "The create-link request timed out") { response ->
+            when (val status = response.statusCode) {
+                200, 201 -> parseCreated(response.body)
+                    ?: throw StrybokServerException("Malformed create-link response", null, status)
+                401 -> throw StrybokUnauthorizedException(
+                    "The client key was refused: it is wrong or was replaced, or link creation is switched off",
+                )
+                403 -> throw RouteNotAllowedException(routePath)
+                429 -> throw StrybokRateLimitedException(retryAfterSeconds(response))
+                400, 413, 422 -> throw validationFailure(status, response.body)
+                else -> throw StrybokServerException("Unexpected status $status", null, status)
+            }
+        }
+    }
+
+    /**
+     * Sends [request], retrying after a timeout, a transport failure or a 5xx answer: up to
+     * `maxRetries` extra attempts, pausing `retryDelayMillis` before the first retry and twice
+     * as long before each further one. Every other answer goes to [onAnswer], whose result
+     * or exception is final.
+     */
+    private suspend fun <T> send(
+        request: StrybokHttpRequest,
+        url: String?,
+        timeoutMessage: String,
+        onAnswer: (StrybokHttpResponse) -> T,
+    ): T {
         var lastError: StrybokException? = null
         for (attempt in 0..config.maxRetries) {
             if (attempt > 0) delay(config.retryDelayMillis * (1L shl (attempt - 1).coerceAtMost(20)))
@@ -193,15 +295,12 @@ internal class StrybokEngine(
                 continue
             }
             if (response == null) {
-                lastError = StrybokTimeoutException(url)
+                lastError = StrybokTimeoutException(timeoutMessage, url)
                 continue
             }
             val status = response.statusCode
-            if (status == 200) return parseResolved(url, response.body)
-            if (status == 404) throw LinkNotFoundException(url)
-            val error = StrybokServerException("Unexpected status $status", url, status)
-            if (status < 500) throw error // Client errors will not improve.
-            lastError = error
+            if (status < 500) return onAnswer(response)
+            lastError = StrybokServerException("Unexpected status $status", url, status)
         }
         throw lastError!!
     }
@@ -371,6 +470,57 @@ internal class StrybokEngine(
         throw StrybokServerException("Malformed resolve response", url, 200)
     }
 
+    /** `null` unless the answer has everything a created link needs. */
+    private fun parseCreated(body: String): CreatedLink? {
+        try {
+            val json = JSONObject(body)
+            val linkId = json.opt("linkId") as? String
+            val slug = json.opt("slug") as? String
+            val routePath = json.opt("routePath") as? String
+            val url = json.opt("url") as? String
+            if (linkId != null && slug != null && routePath != null &&
+                url != null && url.startsWith("https://", ignoreCase = true)
+            ) {
+                return CreatedLink(url = url, slug = slug, routePath = routePath, linkId = linkId)
+            }
+        } catch (_: JSONException) {
+            // Fall through.
+        }
+        return null
+    }
+
+    /** Seconds from a `Retry-After` header; `null` when it is missing or not a number of seconds. */
+    private fun retryAfterSeconds(response: StrybokHttpResponse): Long? {
+        val value = response.header("Retry-After")?.trim().orEmpty()
+        if (value.isEmpty() || !value.all { it in '0'..'9' }) return null
+        return value.toLongOrNull()
+    }
+
+    private fun preflightFailure(field: String, message: String): StrybokValidationException =
+        StrybokValidationException(message, listOf(StrybokValidationIssue(field, message)))
+
+    /** The service's `error.message` and `error.details.issues`, as far as they are present. */
+    private fun validationFailure(status: Int, body: String): StrybokValidationException {
+        var message: String? = null
+        val issues = ArrayList<StrybokValidationIssue>()
+        try {
+            val error = JSONObject(body).opt("error") as? JSONObject
+            message = (error?.opt("message") as? String)?.takeIf { it.isNotBlank() }
+            val list = (error?.opt("details") as? JSONObject)?.opt("issues") as? JSONArray
+            for (index in 0 until (list?.length() ?: 0)) {
+                val issue = list?.opt(index) as? JSONObject ?: continue
+                val text = issue.opt("message") as? String ?: continue
+                issues += StrybokValidationIssue(issue.opt("path") as? String ?: "", text)
+            }
+        } catch (_: JSONException) {
+            // No readable explanation; the status alone has to do.
+        }
+        return StrybokValidationException(
+            message ?: "The service rejected the request (HTTP $status)",
+            Collections.unmodifiableList(issues),
+        )
+    }
+
     private fun toMap(json: JSONObject): Map<String, Any?> {
         val map = LinkedHashMap<String, Any?>()
         for (key in json.keys()) map[key] = toPlain(json.opt(key))
@@ -417,5 +567,10 @@ internal class StrybokEngine(
 
     private fun checkNotStopped() {
         if (stopped) throw StrybokStoppedException()
+    }
+
+    private companion object {
+        const val CLIENT_KEY_HEADER = "X-Strybok-Key"
+        const val MAX_ROUTE_PATH_LENGTH = 512
     }
 }

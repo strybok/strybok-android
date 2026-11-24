@@ -17,12 +17,23 @@ fun ok(route: String = "/invite/abc123", linkId: String = "link_1"): StrybokHttp
         """{"linkId":"$linkId","appId":"app_1","routePath":"$route","payload":{"invitationId":"abc123"}}""",
     )
 
-/** Records requests and answers resolve calls with [onResolve]. */
+const val CLIENT_KEY = "pk_0123456789abcdefghijABCDEFGHIJ01"
+
+fun created(status: Int = 201, slug: String = "Ab3dE9x"): StrybokHttpResponse = StrybokHttpResponse(
+    status,
+    """{"linkId":"link_9","url":"https://$HOST/$slug","slug":"$slug","routePath":"/product/42"}""",
+)
+
+/** Records requests and answers resolve calls with [onResolve] and create-link calls with [onCreate]. */
 class FakeApi(
     @Volatile var onResolve: ((StrybokHttpRequest) -> StrybokHttpResponse)? = null,
 ) : StrybokTransport {
     val resolves = CopyOnWriteArrayList<StrybokHttpRequest>()
     val events = CopyOnWriteArrayList<StrybokHttpRequest>()
+    val creates = CopyOnWriteArrayList<StrybokHttpRequest>()
+
+    @Volatile
+    var onCreate: ((StrybokHttpRequest) -> StrybokHttpResponse)? = null
 
     @Volatile
     var onEvent: (() -> StrybokHttpResponse)? = null
@@ -31,6 +42,10 @@ class FakeApi(
         if (request.url.substringBefore('?').endsWith("/v1/public/events")) {
             events += request
             return onEvent?.invoke() ?: StrybokHttpResponse(202, "")
+        }
+        if (request.url.endsWith("/v1/public/links")) {
+            creates += request
+            return onCreate?.invoke(request) ?: created()
         }
         resolves += request
         return onResolve?.invoke(request) ?: ok()

@@ -682,8 +682,8 @@ class StrybokTest {
         assertEquals("app_open", event.getString("type"))
         assertEquals("link_1", event.getString("linkId"))
         assertEquals("android", event.getString("platform"))
-        assertEquals("0.1.0", event.getString("sdkVersion"))
-        assertEquals("0.1.0", Strybok.SDK_VERSION)
+        assertEquals("0.2.0", event.getString("sdkVersion"))
+        assertEquals("0.2.0", Strybok.SDK_VERSION)
         assertTrue(
             Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
                 .matches(event.getString("eventId")),
