@@ -19,6 +19,9 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
@@ -45,6 +48,10 @@ internal class StrybokEngine(
     private val platform: String,
     /** Wall clock in milliseconds since the epoch; only compared with an attestation token's expiry. */
     private val wallClockMillis: () -> Long = System::currentTimeMillis,
+    /** Storage and package facts for the deferred-link check; `null` when no `Context` was given. */
+    private val deferredPlatform: DeferredLinkPlatform? = null,
+    /** How long one install referrer source may take before it is abandoned. */
+    private val sourceTimeoutMillis: Long = 10_000,
 ) {
     private class Delivery(val link: ResolvedDeepLink, val sequence: Long) {
         /** Guarded by [lock]: put back into the queue by a departing subscriber. */
@@ -79,7 +86,24 @@ internal class StrybokEngine(
 
     /** Created by the first `createLink` that needs it; never by `start` or an incoming link. */
     private var attestation: AttestationSession? = null
+
+    private var deferredEnabled = config.deferredLinks
+    private var deferredLaunched = false
+    private val statusListeners = IdentityHashMap<StrybokDeferredLinkStatusListener, Job>()
+
+    /** Whether a link of this app was accepted since the process started; a deferred link then loses. */
+    private var normalLinkAccepted = false
     // -------------------------------------------------------------------------
+
+    private val deferredStatus = MutableStateFlow(
+        if (config.deferredLinks) DeferredLinkStatus.CHECKING else DeferredLinkStatus.DISABLED,
+    )
+
+    val deferredLinkStatus: StateFlow<DeferredLinkStatus> = deferredStatus.asStateFlow()
+
+    init {
+        require(!config.deferredLinks || deferredPlatform != null) { DEFERRED_NEEDS_CONTEXT }
+    }
 
     @Volatile
     private var stopped = false
@@ -115,7 +139,98 @@ internal class StrybokEngine(
         } else {
             Job().apply { complete() }
         }
+        launchDeferredCheckLocked()
         accepted
+    }
+
+    /** See [Strybok.enableDeferredLinks]. */
+    fun enableDeferredLinks() {
+        synchronized(lock) {
+            checkNotNull(deferredPlatform) { DEFERRED_NEEDS_CONTEXT }
+            if (stopped || deferredEnabled) return
+            deferredEnabled = true
+            deferredStatus.value = DeferredLinkStatus.CHECKING
+            launchDeferredCheckLocked()
+        }
+    }
+
+    /**
+     * Starts the deferred-link check when it is switched on, `start` was called and it has not
+     * run yet. The check is a coroutine of its own that first waits for the launch link, so
+     * `start`, the launch link and `getInitialLink` never wait for it.
+     */
+    private fun launchDeferredCheckLocked() {
+        val started = launchJob ?: return
+        val platform = deferredPlatform ?: return
+        if (!deferredEnabled || deferredLaunched || stopped) return
+        deferredLaunched = true
+        val checker = DeferredLinkChecker(
+            config = config,
+            platform = platform,
+            scope = scope,
+            redeem = ::redeemDeferredLink,
+            normalLinkAccepted = { synchronized(lock) { normalLinkAccepted } },
+            deliver = ::deliverDeferredLink,
+            parse = { url, body ->
+                try {
+                    parseResolved(url, body, isDeferred = true)
+                } catch (_: StrybokException) {
+                    null
+                }
+            },
+            sourceTimeoutMillis = sourceTimeoutMillis,
+            setStatus = { deferredStatus.value = it },
+        )
+        scope.launch(Dispatchers.IO) {
+            started.join()
+            checker.run()
+        }
+    }
+
+    /** The redeem request, with timeout and retries as for resolving; `null` when no answer came. */
+    private suspend fun redeemDeferredLink(body: String): StrybokHttpResponse? {
+        val request = StrybokHttpRequest(
+            method = "POST",
+            url = "${config.apiBaseUrl}/v1/public/deferred-links/redeem",
+            headers = mapOf("Content-Type" to "application/json", "Accept" to "application/json"),
+            body = body,
+            timeoutMillis = config.timeoutMillis,
+        )
+        return try {
+            send(request, null, "The redeem request timed out") { it }
+        } catch (_: StrybokException) {
+            null // Not reported anywhere: a later launch tries again.
+        }
+    }
+
+    /** A normal link wins, also one that arrived while the request was in flight. No `app_open`. */
+    private fun deliverDeferredLink(link: ResolvedDeepLink): DeferredDelivery = synchronized(lock) {
+        when {
+            stopped -> DeferredDelivery.STOPPED
+            normalLinkAccepted -> DeferredDelivery.SUPERSEDED
+            else -> {
+                deliver(link, isInitial = false)
+                DeferredDelivery.DELIVERED
+            }
+        }
+    }
+
+    fun addDeferredLinkStatusListener(listener: StrybokDeferredLinkStatusListener) {
+        synchronized(lock) {
+            if (stopped || statusListeners.containsKey(listener)) return
+            statusListeners[listener] = scope.launch {
+                deferredStatus.collect { status ->
+                    callbackExecutor.execute {
+                        val attached = synchronized(lock) { statusListeners.containsKey(listener) }
+                        if (attached) listener.onDeferredLinkStatus(status)
+                    }
+                }
+            }
+        }
+    }
+
+    fun removeDeferredLinkStatusListener(listener: StrybokDeferredLinkStatusListener) {
+        synchronized(lock) { statusListeners.remove(listener) }?.cancel()
     }
 
     /** See [Strybok.handleUrl]. */
@@ -171,8 +286,9 @@ internal class StrybokEngine(
         checkNotStopped()
         val parsed = parseStrybokLink(url, config.allowedHosts)
             ?: throw UnsupportedLinkException("Not a link for this app", url)
-        // Query and fragment are not needed for the lookup and may hold private data.
-        val lookup = "https://${parsed.host}${parsed.path}"
+        // Of the query only the campaign parameters are sent; the rest and the fragment may
+        // hold private data.
+        val lookup = parsed.lookup
         val request = StrybokHttpRequest(
             method = "GET",
             url = "${config.apiBaseUrl}/v1/public/resolve?url=${URLEncoder.encode(lookup, "UTF-8")}",
@@ -396,6 +512,7 @@ internal class StrybokEngine(
             }
             subscribers.clear()
             listeners.clear()
+            statusListeners.clear()
         }
         scope.cancel()
     }
@@ -405,6 +522,7 @@ internal class StrybokEngine(
     /** Whether [url] is ours and not a duplicate delivery of the previous tap. */
     private fun acceptLocked(url: String?): Boolean {
         if (url == null || parseStrybokLink(url, config.allowedHosts) == null) return false
+        normalLinkAccepted = true
         // The OS can hand over the same tap twice, e.g. to onCreate and to onNewIntent.
         val now = clockMillis()
         val duplicate = lastUrl == url && now - lastUrlAt < config.dedupeWindowMillis
@@ -509,7 +627,7 @@ internal class StrybokEngine(
         }
     }
 
-    private fun parseResolved(url: String, body: String): ResolvedDeepLink {
+    private fun parseResolved(url: String, body: String, isDeferred: Boolean = false): ResolvedDeepLink {
         try {
             val json = JSONObject(body)
             val linkId = json.opt("linkId") as? String
@@ -519,12 +637,38 @@ internal class StrybokEngine(
                 routePath.startsWith("/") && !routePath.startsWith("//")
             ) {
                 val payload = (json.opt("payload") as? JSONObject)?.let(::toMap) ?: emptyMap()
-                return ResolvedDeepLink(url, linkId, appId, routePath, payload)
+                val campaign = parseCampaign(json.opt("campaign"))
+                return ResolvedDeepLink(url, linkId, appId, routePath, payload, campaign, isDeferred)
             }
         } catch (_: JSONException) {
             // Fall through to the error below.
         }
         throw StrybokServerException("Malformed resolve response", url, 200)
+    }
+
+    /** Keeps the five string fields; anything else, or no object at all, is not an error. */
+    private fun parseCampaign(value: Any?): LinkCampaign {
+        val json = value as? JSONObject ?: return LinkCampaign.EMPTY
+        val campaign = LinkCampaign(
+            source = json.opt("source") as? String,
+            medium = json.opt("medium") as? String,
+            campaign = json.opt("campaign") as? String,
+            term = json.opt("term") as? String,
+            content = json.opt("content") as? String,
+        )
+        return if (campaign.isEmpty) LinkCampaign.EMPTY else campaign
+    }
+
+    /** What resolve returned, unchanged; `null` when there is nothing to report. */
+    private fun campaignJson(campaign: LinkCampaign): JSONObject? {
+        if (campaign.isEmpty) return null
+        val json = JSONObject()
+        campaign.source?.let { json.put("source", it) }
+        campaign.medium?.let { json.put("medium", it) }
+        campaign.campaign?.let { json.put("campaign", it) }
+        campaign.term?.let { json.put("term", it) }
+        campaign.content?.let { json.put("content", it) }
+        return json
     }
 
     /** `null` unless the answer has everything a created link needs. */
@@ -604,6 +748,7 @@ internal class StrybokEngine(
                     .put("type", "app_open")
                     .put("platform", platform)
                     .put("sdkVersion", Strybok.SDK_VERSION.take(32))
+                    .putOpt("campaign", campaignJson(link.campaign))
                     .toString()
                 execute(
                     StrybokHttpRequest(
@@ -634,5 +779,7 @@ internal class StrybokEngine(
         private const val ATTESTATION_INVALID = "ATTESTATION_INVALID"
         private const val ATTESTATION_REQUIRED = "ATTESTATION_REQUIRED"
         private const val MAX_ROUTE_PATH_LENGTH = 512
+        const val DEFERRED_NEEDS_CONTEXT =
+            "Deferred links need a Context: create the instance with Strybok(context, config)"
     }
 }

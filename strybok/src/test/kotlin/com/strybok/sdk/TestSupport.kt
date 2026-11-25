@@ -24,6 +24,17 @@ fun created(status: Int = 201, slug: String = "Ab3dE9x"): StrybokHttpResponse = 
     """{"linkId":"link_9","url":"https://$HOST/$slug","slug":"$slug","routePath":"/product/42"}""",
 )
 
+/** A click id as the service makes them: `dc_` and 32 base62 characters. */
+const val CLICK_ID = "dc_0123456789abcdefghijABCDEFGHIJ01"
+
+/** What `POST /v1/public/deferred-links/redeem` answers for a redeemable id. */
+fun redeemed(url: String = "https://$HOST/promo42", route: String = "/promo/42"): StrybokHttpResponse =
+    StrybokHttpResponse(
+        200,
+        """{"linkId":"link_7","appId":"app_1","routePath":"$route","payload":{"code":"SPRING"},""" +
+            """"campaign":{"source":"instagram"},"url":"$url","deferred":true}""",
+    )
+
 /** Records requests and answers resolve calls with [onResolve] and create-link calls with [onCreate]. */
 class FakeApi(
     @Volatile var onResolve: ((StrybokHttpRequest) -> StrybokHttpResponse)? = null,
@@ -38,7 +49,16 @@ class FakeApi(
     @Volatile
     var onEvent: (() -> StrybokHttpResponse)? = null
 
+    val redeems = CopyOnWriteArrayList<StrybokHttpRequest>()
+
+    @Volatile
+    var onRedeem: ((StrybokHttpRequest) -> StrybokHttpResponse)? = null
+
     override fun execute(request: StrybokHttpRequest): StrybokHttpResponse {
+        if (request.url.endsWith("/v1/public/deferred-links/redeem")) {
+            redeems += request
+            return onRedeem?.invoke(request) ?: redeemed()
+        }
         if (request.url.substringBefore('?').endsWith("/v1/public/events")) {
             events += request
             return onEvent?.invoke() ?: StrybokHttpResponse(202, "")

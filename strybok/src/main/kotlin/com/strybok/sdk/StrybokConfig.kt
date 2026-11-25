@@ -95,7 +95,29 @@ public class StrybokConfig(
      * service decides.
      */
     public val integrityTokenProvider: StrybokIntegrityTokenProvider? = null,
+    /**
+     * Restore a link that was tapped before the app was installed, off by default. On the first
+     * launch the SDK asks [installReferrerSources] for the store's install referrer and, when
+     * it carries a click id of the service, delivers that link like any other (with
+     * [ResolvedDeepLink.isDeferred] set). Needs an instance created with
+     * `Strybok(context, config)` and the feature switched on for the application in the
+     * dashboard. With `false` nothing is read, sent or stored.
+     *
+     * Reading the referrer is access to information stored on the device. If your app asks for
+     * consent first, leave this `false` and call [Strybok.enableDeferredLinks] afterwards.
+     */
+    public val deferredLinks: Boolean = false,
+    /**
+     * The stores to ask when deferred links are on, in this order — for example
+     * `listOf(PlayInstallReferrerSource(context))`. Empty means the check ends at once with
+     * [DeferredLinkStatus.UNAVAILABLE].
+     */
+    installReferrerSources: List<InstallReferrerSource> = emptyList(),
 ) {
+    /** A copy of the sources passed in. */
+    public val installReferrerSources: List<InstallReferrerSource> =
+        java.util.Collections.unmodifiableList(ArrayList(installReferrerSources))
+
     public val apiBaseUrl: String = apiBaseUrl.trim().trimEnd('/')
 
     /** Lower-cased copy of the hostnames passed in. */
@@ -135,6 +157,8 @@ public class StrybokConfig(
         private var clientKey: String? = null
         private var attestation: Boolean = false
         private var integrityTokenProvider: StrybokIntegrityTokenProvider? = null
+        private var deferredLinks: Boolean = false
+        private var installReferrerSources: List<InstallReferrerSource> = emptyList()
 
         public fun timeoutMillis(value: Long): Builder = apply { timeoutMillis = value }
 
@@ -162,6 +186,13 @@ public class StrybokConfig(
         public fun integrityTokenProvider(value: StrybokIntegrityTokenProvider?): Builder =
             apply { integrityTokenProvider = value }
 
+        /** Restore a link tapped before the app was installed; needs `new Strybok(context, config)`. */
+        public fun deferredLinks(value: Boolean): Builder = apply { deferredLinks = value }
+
+        /** The stores to ask for the install referrer, in order, e.g. a [PlayInstallReferrerSource]. */
+        public fun installReferrerSources(value: List<InstallReferrerSource>): Builder =
+            apply { installReferrerSources = value }
+
         public fun build(): StrybokConfig = StrybokConfig(
             apiBaseUrl = apiBaseUrl,
             allowedHosts = allowedHosts,
@@ -176,6 +207,8 @@ public class StrybokConfig(
             clientKey = clientKey,
             attestation = attestation,
             integrityTokenProvider = integrityTokenProvider,
+            deferredLinks = deferredLinks,
+            installReferrerSources = installReferrerSources,
         )
     }
 }

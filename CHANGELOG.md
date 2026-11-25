@@ -1,3 +1,53 @@
+## 0.4.0
+
+- Campaign values. `ResolvedDeepLink.campaign` (`LinkCampaign`: `source`, `medium`, `campaign`,
+  `term`, `content`, each `String?`; `isEmpty`; `LinkCampaign.EMPTY`) holds the link's default
+  campaign values overridden by the `utm_*` parameters of the tapped URL, as the service returned
+  them. It is never `null`. The values are untrusted labels chosen by whoever shared the link.
+- The resolve request now carries the five parameters `utm_source`, `utm_medium`, `utm_campaign`,
+  `utm_term` and `utm_content` of the tapped URL — exact lower-case names, the first occurrence
+  of each, percent-decoded, and only values of 1–64 characters out of `A–Z a–z 0–9 . _ ~ -`, in
+  a fixed order. Every other query parameter and the fragment are still never sent, and a URL
+  without valid campaign parameters produces exactly the request of earlier versions.
+- The `app_open` event reports `campaign` exactly as resolve returned it and leaves it out when
+  there is none; it is never built from the URL.
+- Additive for callers: `ResolvedDeepLink` keeps its five-argument constructor (the new argument
+  has a default and a Java overload). Which URLs are accepted, duplicate detection (the whole
+  URL string as received) and everything else are unchanged.
+- Deferred links, optional and off by default: restore a link that was tapped before the app was
+  installed from a store. With `StrybokConfig.deferredLinks = true`, a list of
+  `installReferrerSources` and an instance created with the new `Strybok(context, config)`, the
+  SDK asks the stores for their install referrer after the first `start`, exchanges the click id
+  found in it (`POST /v1/public/deferred-links/redeem`: the id, the package name and the SDK
+  version, nothing else) and delivers the link through the normal pipeline with the new
+  `ResolvedDeepLink.isDeferred` set. `enableDeferredLinks()` switches it on later, for example
+  after a consent screen.
+- The check never runs on the start path: `start`, the launch link, `getInitialLink` and
+  `createLink` do not wait for it, and `getInitialLink` never returns a deferred link. A normal
+  link of the app that arrives first — also while the request is in flight — wins and the
+  deferred link is dropped. No `app_open` is sent for it, nothing is reported to `onError`, and
+  neither the referrer nor the click id is logged or stored.
+- At most once per installation: the SDK keeps `attempts` and `done` in the app's no-backup
+  storage, counts an attempt before a source is asked, gives up after three launches, stores
+  `done` before the link is delivered, and skips the check for an app that was updated since it
+  was installed (`firstInstallTime != lastUpdateTime`).
+- `deferredLinkStatus` (`DeferredLinkStatus`: `DISABLED`, `CHECKING`, `PENDING`,
+  `NOT_FIRST_LAUNCH`, `UNAVAILABLE`, `NO_REFERRER`, `NOT_FOUND`, `SUPERSEDED`, `DELIVERED`,
+  `FAILED`; `isFinal`) is readable at any time; `deferredLinkStatuses` is a `StateFlow` and
+  `addDeferredLinkStatusListener` the callback form.
+- **No new dependency.** `InstallReferrerSource` is a one-method interface with the answers
+  `InstallReferrerResult.referrer(…)`, `UNAVAILABLE_FOR_NOW` and `UNAVAILABLE`. Shipped
+  sources: `PlayInstallReferrerSource` (compiled against
+  `com.android.installreferrer:installreferrer` with `compileOnly`),
+  `GalaxyStoreInstallReferrerSource` (compiled against
+  `store.galaxy.samsung.installreferrer:samsung_galaxystore_install_referrer` with
+  `compileOnly`) and `AppGalleryInstallReferrerSource` (a content provider query, no library).
+  An app adds the library of each store it uses; a source whose library is missing answers
+  "unavailable". The consumer R8 rules cover the missing classes.
+- Not verified: nothing of deferred links has run on a device or against a real store. The
+  Galaxy Store and AppGallery sources are unverified altogether, including whether those stores
+  hand the value to the app; the manifest entries AppGallery may need are documented, not added.
+
 ## 0.3.0
 
 - Optional attestation of `createLink` ("Extra protection"), off by default: with

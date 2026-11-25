@@ -1,5 +1,6 @@
 package com.strybok.sdk
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -7,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import java.util.concurrent.Executor
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Entry point of the SDK.
@@ -43,16 +45,38 @@ import kotlinx.coroutines.flow.Flow
  * [createLink] makes a link to share; it needs [StrybokConfig.clientKey] and is independent
  * of everything above.
  *
- * All methods are thread-safe. Deferred deep linking (restoring a link after the
- * app was installed from a store) is not supported.
+ * Restoring a link after the app was installed from a store ("deferred links") is optional
+ * and off by default: see [StrybokConfig.deferredLinks], which needs the constructor that
+ * takes a [Context].
+ *
+ * All methods are thread-safe.
  */
 public class Strybok internal constructor(
     /** The configuration this instance was created with. */
     public val config: StrybokConfig,
     clockMillis: (() -> Long)?,
     wallClockMillis: (() -> Long)? = null,
+    deferredPlatform: DeferredLinkPlatform? = null,
+    sourceTimeoutMillis: Long = 10_000,
 ) {
+    /**
+     * An instance without deferred links.
+     *
+     * @throws IllegalArgumentException when [StrybokConfig.deferredLinks] is on: that needs
+     *   the constructor with a [Context].
+     */
     public constructor(config: StrybokConfig) : this(config, null, null)
+
+    /**
+     * An instance that can restore a link after installation (see
+     * [StrybokConfig.deferredLinks] and [enableDeferredLinks]). The context is used for the
+     * app's package name, its install and update times and two small values in the app's
+     * private storage, and only once the check runs; nothing is touched here.
+     *
+     * @param context any context; the application context is kept.
+     */
+    public constructor(context: Context, config: StrybokConfig) :
+        this(config, null, null, AndroidDeferredLinkPlatform(context))
 
     private val engine = StrybokEngine(
         config = config,
@@ -60,6 +84,8 @@ public class Strybok internal constructor(
         clockMillis = clockMillis ?: { System.nanoTime() / 1_000_000 },
         platform = PLATFORM,
         wallClockMillis = wallClockMillis ?: System::currentTimeMillis,
+        deferredPlatform = deferredPlatform,
+        sourceTimeoutMillis = sourceTimeoutMillis,
     )
 
     /**
@@ -239,6 +265,41 @@ public class Strybok internal constructor(
     public fun createLink(routePath: String, callback: StrybokCreateLinkCallback): Unit =
         engine.createLink(routePath, null, null, null, null, callback)
 
+    // --- Deferred links ---------------------------------------------------------------
+
+    /**
+     * Switches deferred links on after the instance was created — for example once the person
+     * agreed on a consent screen — and runs the check once, after `start`. Does nothing when
+     * [StrybokConfig.deferredLinks] was already on, when it was called before, or after [stop].
+     *
+     * The check never delays `start`, the launch link, [getInitialLink] or [createLink], and
+     * reports nothing to [StrybokConfig.onError]; watch [deferredLinkStatus] instead.
+     *
+     * @throws IllegalStateException when the instance was created without a [Context].
+     */
+    public fun enableDeferredLinks(): Unit = engine.enableDeferredLinks()
+
+    /**
+     * Where the deferred-link check stands: readable at any time and observable. For
+     * developers and QA; apps do not need it to receive the link. Collectors see the current
+     * value first; values that follow each other quickly may be skipped.
+     */
+    public val deferredLinkStatuses: StateFlow<DeferredLinkStatus> get() = engine.deferredLinkStatus
+
+    /** The current value of [deferredLinkStatuses]. */
+    public val deferredLinkStatus: DeferredLinkStatus get() = engine.deferredLinkStatus.value
+
+    /**
+     * Callback alternative to [deferredLinkStatuses]. [listener] gets the current status right
+     * away and later ones as they come, on the callback executor (the main thread by default).
+     */
+    public fun addDeferredLinkStatusListener(listener: StrybokDeferredLinkStatusListener): Unit =
+        engine.addDeferredLinkStatusListener(listener)
+
+    /** Removes a listener added with [addDeferredLinkStatusListener]. */
+    public fun removeDeferredLinkStatusListener(listener: StrybokDeferredLinkStatusListener): Unit =
+        engine.removeDeferredLinkStatusListener(listener)
+
     // --- Listeners and lifecycle ---------------------------------------------------
 
     /**
@@ -286,7 +347,7 @@ public class Strybok internal constructor(
 
     public companion object {
         /** Version reported with analytics events. */
-        public const val SDK_VERSION: String = "0.3.0"
+        public const val SDK_VERSION: String = "0.4.0"
 
         internal const val PLATFORM: String = "android"
     }

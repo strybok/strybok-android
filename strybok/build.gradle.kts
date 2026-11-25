@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.strybok"
-version = "0.3.0"
+version = "0.4.0"
 
 android {
     namespace = "com.strybok.sdk"
@@ -44,6 +44,11 @@ dependencies {
     // Only PlayIntegrityTokenProvider uses it, and only to compile: the published artifact does
     // not depend on Google's libraries. An app that wants attestation adds the library itself.
     compileOnly("com.google.android.play:integrity:1.4.0")
+
+    // Only the install referrer sources of deferred links use these two, and only to compile:
+    // an app that wants a source adds its store's library itself.
+    compileOnly("com.android.installreferrer:installreferrer:2.2")
+    compileOnly("store.galaxy.samsung.installreferrer:samsung_galaxystore_install_referrer:4.0.0")
 
     testImplementation("junit:junit:4.13.2")
     // android.jar only contains stubs of org.json; JVM unit tests need the real thing.
