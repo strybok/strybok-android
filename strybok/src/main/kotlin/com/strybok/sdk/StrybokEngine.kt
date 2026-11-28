@@ -122,8 +122,11 @@ internal class StrybokEngine(
         }
     }
 
-    fun isStrybokUrl(url: String?): Boolean =
-        url != null && parseStrybokLink(url, config.allowedHosts) != null
+    fun isStrybokUrl(url: String?): Boolean = url != null && parse(url) != null
+
+    /** Whether [url] is a link of this app, with the configured `parameterLinks`; its lookup parts. */
+    private fun parse(url: String): ParsedLink? =
+        parseStrybokLink(url, config.allowedHosts, config.parameterLinks)
 
     /** See [Strybok.startWithUrl]. */
     fun start(launchUrl: String?): Boolean = synchronized(lock) {
@@ -284,10 +287,9 @@ internal class StrybokEngine(
 
     suspend fun resolve(url: String): ResolvedDeepLink {
         checkNotStopped()
-        val parsed = parseStrybokLink(url, config.allowedHosts)
-            ?: throw UnsupportedLinkException("Not a link for this app", url)
-        // Of the query only the campaign parameters are sent; the rest and the fragment may
-        // hold private data.
+        val parsed = parse(url) ?: throw UnsupportedLinkException("Not a link for this app", url)
+        // Of the query only the campaign parameters (and with parameterLinks the payload keys) are
+        // sent; the rest and the fragment may hold private data.
         val lookup = parsed.lookup
         val request = StrybokHttpRequest(
             method = "GET",
@@ -521,7 +523,7 @@ internal class StrybokEngine(
 
     /** Whether [url] is ours and not a duplicate delivery of the previous tap. */
     private fun acceptLocked(url: String?): Boolean {
-        if (url == null || parseStrybokLink(url, config.allowedHosts) == null) return false
+        if (url == null || parse(url) == null) return false
         normalLinkAccepted = true
         // The OS can hand over the same tap twice, e.g. to onCreate and to onNewIntent.
         val now = clockMillis()

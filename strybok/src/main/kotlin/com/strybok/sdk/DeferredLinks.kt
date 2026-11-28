@@ -318,6 +318,7 @@ internal class DeferredLinkChecker(
         }
         if (json.opt("deferred") != true) return null
         val url = json.opt("url") as? String ?: return null
+        // Deferred links are stored links: the single-slug rule, with or without parameterLinks.
         if (parseStrybokLink(url, config.allowedHosts) == null) return null
         return parse(url, body)
     }

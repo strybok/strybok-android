@@ -37,7 +37,8 @@ public interface StrybokCreateLinkCallback {
  * Configuration of [Strybok]. Kotlin callers use named arguments, Java callers
  * the [Builder].
  *
- * @throws IllegalArgumentException when a value is out of range.
+ * @throws IllegalArgumentException when a value is out of range, or the payload keys of
+ *   [parameterLinks] are not valid (see [ParameterLinks.payloadKeys]).
  */
 public class StrybokConfig(
     /** Base URL of the API, e.g. `https://api.strybok.com`. A path prefix is preserved. */
@@ -113,6 +114,20 @@ public class StrybokConfig(
      * [DeferredLinkStatus.UNAVAILABLE].
      */
     installReferrerSources: List<InstallReferrerSource> = emptyList(),
+    /**
+     * Links without an API call, off by default: deliver path links
+     * (`https://<host>/product/42?id=7`) and Firebase long links (`https://<host>/?link=…`) too,
+     * and send the values of these payload keys with them. Copy `parameterLinks` of the
+     * integration guide (`GET /v1/apps/:appId/integration`, shown on the dashboard's setup
+     * screen); while it is `null` there, leave this `null`.
+     *
+     * With it, any address of [allowedHosts] that is a valid route is resolved, so [onError]
+     * gets a [LinkNotFoundException] for one that is no link. The route and payload of a
+     * delivered link are those the service read, never the tapped path. Without it nothing
+     * changes: only single-slug links, and of the query only the `utm_*` values. Deferred links
+     * keep the single-slug rule either way.
+     */
+    public val parameterLinks: ParameterLinks? = null,
 ) {
     /** A copy of the sources passed in. */
     public val installReferrerSources: List<InstallReferrerSource> =
@@ -142,6 +157,8 @@ public class StrybokConfig(
         require(maxRetries >= 0) { "maxRetries must not be negative" }
         require(retryDelayMillis >= 0) { "retryDelayMillis must not be negative" }
         require(dedupeWindowMillis >= 0) { "dedupeWindowMillis must not be negative" }
+        val problem = parameterLinks?.let { payloadKeysProblem(it.payloadKeys) }
+        require(problem == null) { "parameterLinks: $problem" }
     }
 
     /** Builder for Java callers; every setter is optional. */
@@ -159,6 +176,7 @@ public class StrybokConfig(
         private var integrityTokenProvider: StrybokIntegrityTokenProvider? = null
         private var deferredLinks: Boolean = false
         private var installReferrerSources: List<InstallReferrerSource> = emptyList()
+        private var parameterLinks: ParameterLinks? = null
 
         public fun timeoutMillis(value: Long): Builder = apply { timeoutMillis = value }
 
@@ -193,6 +211,9 @@ public class StrybokConfig(
         public fun installReferrerSources(value: List<InstallReferrerSource>): Builder =
             apply { installReferrerSources = value }
 
+        /** Links without an API call (path links and Firebase long links); see [StrybokConfig.parameterLinks]. */
+        public fun parameterLinks(value: ParameterLinks?): Builder = apply { parameterLinks = value }
+
         public fun build(): StrybokConfig = StrybokConfig(
             apiBaseUrl = apiBaseUrl,
             allowedHosts = allowedHosts,
@@ -209,6 +230,7 @@ public class StrybokConfig(
             integrityTokenProvider = integrityTokenProvider,
             deferredLinks = deferredLinks,
             installReferrerSources = installReferrerSources,
+            parameterLinks = parameterLinks,
         )
     }
 }

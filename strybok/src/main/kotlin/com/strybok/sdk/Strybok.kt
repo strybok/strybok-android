@@ -45,6 +45,9 @@ import kotlinx.coroutines.flow.StateFlow
  * [createLink] makes a link to share; it needs [StrybokConfig.clientKey] and is independent
  * of everything above.
  *
+ * Path links and Firebase long links ("links without an API call") are optional and off by
+ * default: see [StrybokConfig.parameterLinks].
+ *
  * Restoring a link after the app was installed from a store ("deferred links") is optional
  * and off by default: see [StrybokConfig.deferredLinks], which needs the constructor that
  * takes a [Context].
@@ -172,7 +175,11 @@ public class Strybok internal constructor(
     public fun getInitialLink(callback: StrybokInitialLinkCallback): Unit =
         engine.getInitialLink(callback)
 
-    /** Whether [url] is a link of this app: `https`, an allowed host, default port, no credentials, a single slug. */
+    /**
+     * Whether [url] is a link of this app: `https`, an allowed host, default port, no credentials,
+     * a single slug — or, with [StrybokConfig.parameterLinks], a route path or a Firebase long
+     * link. Read from the string as received.
+     */
     public fun isStrybokUrl(url: String?): Boolean = engine.isStrybokUrl(url)
 
     /**
@@ -347,7 +354,7 @@ public class Strybok internal constructor(
 
     public companion object {
         /** Version reported with analytics events. */
-        public const val SDK_VERSION: String = "0.4.0"
+        public const val SDK_VERSION: String = "0.5.0"
 
         internal const val PLATFORM: String = "android"
     }

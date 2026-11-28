@@ -51,6 +51,31 @@ parameters of the tapped URL. They are labels chosen by whoever shared the link:
 your analytics, never to decide anything. Details:
 [integration guide](./docs/android-sdk.md#campaign-values).
 
+### Links without an API call (optional)
+
+When the owner has switched on path links (`https://<host>/product/42?id=7`) or Firebase long
+links (`https://<host>/?link=…`) for the application, pass the payload keys from
+`parameterLinks` of the integration guide (`GET /v1/apps/:appId/integration`, shown on the
+dashboard's setup screen):
+
+```kotlin
+val strybok = Strybok(
+    StrybokConfig(
+        apiBaseUrl = "https://api.strybok.com",
+        allowedHosts = setOf("my-app.strybok.link"),
+        parameterLinks = ParameterLinks(payloadKeys = listOf("id", "lang")),
+    ),
+)
+```
+
+Java: `new StrybokConfig.Builder(…).parameterLinks(new ParameterLinks(Arrays.asList("id", "lang"))).build()`.
+
+Such a link arrives on `links` like any other, with the route and payload the service read
+(never the tapped path). Of the URL only the path, the values of these keys and the `utm_*`
+values are sent. Without the option the SDK behaves exactly as 0.4.0. Unit-tested only, never run
+on a device. Details:
+[integration guide](./docs/android-sdk.md#11-links-without-an-api-call-optional).
+
 ### Extra protection (optional)
 
 The publishable key can be copied out of an app. The owner of the application can therefore ask
@@ -148,7 +173,9 @@ Full guide, manifest setup and troubleshooting:
 [`docs/android-sdk.md`](./docs/android-sdk.md).
 Behaviour shared by all SDKs: [`docs/sdk-contract.md`](./docs/sdk-contract.md).
 
-- **Early release (0.4.x)**: covered by JVM unit tests only. Not yet verified on a physical device or emulator.
+- **Early release (0.5.x)**: covered by JVM unit tests only. Not yet verified on a physical device or emulator.
+- Links without an API call (path links and Firebase long links) are optional, off by default and
+  unit-tested only; see above.
 - Restoring a link after installation ("deferred links") is optional, off by default and has not
   run on a device; see above.
 - `minSdk` 21. Only dependency: `kotlinx-coroutines-core`. Google's Play Integrity library and
@@ -161,7 +188,7 @@ In `app/build.gradle.kts` (the library is on Maven Central):
 
 ```kotlin
 dependencies {
-    implementation("com.strybok:strybok-android:0.4.0")
+    implementation("com.strybok:strybok-android:0.5.0")
 }
 ```
 
@@ -174,7 +201,8 @@ dependencies {
 | `strybok/src/main/kotlin/.../CreateLinkBody.kt`             | JSON body of `createLink`.                                                  |
 | `strybok/src/main/kotlin/.../Attestation.kt`                | Optional attestation of `createLink`: challenge, token cache.               |
 | `strybok/src/main/kotlin/.../PlayIntegrityTokenProvider.kt` | Optional Play Integrity provider (`compileOnly` library).                   |
-| `strybok/src/main/kotlin/.../LinkParser.kt`                 | "Is this URL ours" rules and the campaign query filter.                     |
+| `strybok/src/main/kotlin/.../LinkParser.kt`                 | "Is this URL ours" rules, the campaign query filter and the payload keys.   |
+| `strybok/src/main/kotlin/.../ParameterLinks.kt`             | The optional `parameterLinks` setting and its validation.                   |
 | `strybok/src/main/kotlin/.../DeferredLinks.kt`              | Optional deferred links: the check, its status, the sources' interface.     |
 | `strybok/src/main/kotlin/.../InstallReferrerSources.kt`     | Google Play, Galaxy Store (`compileOnly` libraries) and AppGallery sources. |
 | `strybok/src/main/kotlin/.../DeferredLinkStorage.kt`        | The two stored values of the check, in no-backup storage.                   |

@@ -1,3 +1,34 @@
+## 0.5.0
+
+- Links without an API call, optional and off by default: the new `StrybokConfig.parameterLinks`
+  (`ParameterLinks(payloadKeys)`; `Builder.parameterLinks` for Java) delivers path links such as
+  `https://<host>/product/42?id=7` and Firebase long links `https://<host>/?link=…` that the
+  owner switched on for the application. The keys come from `parameterLinks` of the integration
+  guide (`GET /v1/apps/:appId/integration`, shown on the dashboard's setup screen). With it:
+  - a route path and a long link are links of the app too, besides a single slug; an empty path
+    is the root; reserved paths such as `/favicon.ico` or `/.well-known/…` never are;
+  - resolving sends the path as received, the first value of each configured key (1–256
+    characters without control characters, re-encoded) and the `utm_*` values; for a long link
+    the deep link's scheme, host and path with its values of the keys, plus `apn` and `ibi`.
+    Nothing else of the query and never the fragment;
+  - the delivered link has the route and payload the service read, never the tapped path, and
+    `app_open` carries the `linkId` the service returned;
+  - any address of the hosts that is a valid route is resolved, so `onError` gets a
+    `LinkNotFoundException` for one that is no link.
+- An invalid list of keys (more than 20, a key twice, a key that is not 1–40 characters of
+  `A–Z a–z 0–9 _ . -`, starts with `utm_` in any case, or is `st`, `sd`, `si` or `strybok_click`)
+  makes `StrybokConfig` throw an `IllegalArgumentException`, like an invalid `apiBaseUrl`.
+- The SDK keeps reading the URL string as received: the path is sent as it is, never decoded or
+  normalised. Values are decoded with a strict UTF-8 decoder of the SDK's own, so every Android
+  version reads them the same way.
+- Unchanged without the option: the same links are accepted and every request is the one 0.4.0
+  sent. Deferred links keep the single-slug rule with the option as well: the URL of a redeem
+  answer must have one slug segment.
+- `StrybokConfig` has a new last constructor parameter: recompile code built against 0.4.0.
+- Covered by JVM unit tests only, against the shared test vectors of the SDK contract (77 tapped
+  URLs, 19 configurations) and a fake transport. Never run on a device, an emulator or against
+  the production API.
+
 ## 0.4.0
 
 - Campaign values. `ResolvedDeepLink.campaign` (`LinkCampaign`: `source`, `medium`, `campaign`,
